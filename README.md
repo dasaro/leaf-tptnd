@@ -4,9 +4,9 @@ Lean 4 implementation of a core fragment of **Trustworthy Probabilistic
 Typed Natural Deduction (TPTND)**, used to produce machine-checked
 fairness certificates from group-level statistics.
 
-This is the supporting implementation for the OVERLAY 2026 submission
-*"Leaf: Machine-Checked Fairness Certificates via Trustworthy
-Probabilistic Typed Natural Deduction."*
+This is the supporting implementation for the OVERLAY 2026
+submission *"Fairness Certificates via a Lean-Backed
+Probabilistic Typed Deduction"* by F. A. D'Asaro and G. Primiero.
 
 ## Quick start
 
