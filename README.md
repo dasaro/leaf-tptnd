@@ -46,23 +46,23 @@ The kernel exposes one dispatcher:
 def checkDerivation (d : Derivation) : CheckM Unit
 ```
 
-`CheckM` is `Except String Id`, so `checkDerivation d` returns either
-`.ok ()` (the derivation `d` is the certificate) or `.error msg` where
-`msg` identifies the failing premise.
+`CheckM` is `ExceptT String Id` (which reduces to `Except String`),
+so `checkDerivation d` returns either `.ok ()` (the derivation `d`
+is the certificate) or `.error msg` where `msg` identifies the
+failing premise.
 
-A `Derivation` tree is built with
-`Derivation.node ruleName premises sequent independenceWitness` where
-`ruleName : RuleName` is one of the closed enumeration of rule
-constructors (e.g. `.iT`, `.iUT2`, `.update`, `.ePosterior`,
-`.contraction`). Rule-name typos are compile-time errors.
+### A successful certificate check
 
-### A minimal end-to-end example
+The minimal example below builds an `IUT` derivation: 35 / 100
+applicants from group A are denied, the model says 20 %, and 20 %
+falls outside the score-test acceptance band for the observed
+frequency, so the derivation must conclude `UTrust`.
 
 ```lean
 import TPTND
 open TPTND
 
-example : Except String Unit := Id.run do
+#eval show Except String Unit from Id.run do
   let α    := Output.atom "Denied"
   let t    := Term.atom "applicants"
   let σ    := ({"src_A"} : Finset String)
@@ -71,31 +71,73 @@ example : Except String Unit := Id.run do
   let f    := clampProb (35 / 100)
   let p    := clampProb (20 / 100)
 
-  -- Observation leaf: 100 applicants, 35 denied
   let obsCtx : Context := [⟨"applicants", supp, α, .unknown⟩]
   let obsClaim : TermClaim := ⟨.frequency, t, n, α, f, σ⟩
   let dObs := Derivation.node .obs [] ⟨obsCtx, .term obsClaim⟩ false
 
-  -- Identity leaf: model says 20%
   let mE  : ContextEntry := ⟨"x", supp, α, .exact p⟩
   let dM  := Derivation.node .identity [] ⟨[mE], .identity mE⟩ false
 
-  -- IUT: 20% is outside the binomial CI for f=35%, n=100
-  let ci          := binomialCI n f p
-  let untrust     : TrustClaim := .untrust t n α f p ci
-  let dIUT        := Derivation.node .iUT [dM, dObs]
-                       ⟨[mE] ++ obsCtx, .trust untrust⟩ false
+  let ci      := binomialCI n f p
+  let untrust : TrustClaim := .untrust t n α f p ci
+  let dIUT    := Derivation.node .iUT [dM, dObs]
+                   ⟨[mE] ++ obsCtx, .trust untrust⟩ false
 
   checkDerivation dIUT
+-- Except.ok ()
 ```
 
-The kernel verifies, in order: that the observation leaf's provenance is
-non-empty, that the identity leaf's constraint is exact, that the
-declared CI matches `binomialCI`, that the model probability lies
-outside the CI (otherwise `IT` would be the right rule), that the
-conclusion's term, sample size, output and frequency match the
-observation premise, and that the conclusion context inherits properly
-from the premises.
+### A failed certificate check
+
+The same shape, but with the model now claiming 30 % (which lies
+*inside* the band) — so `IUT` is no longer the correct rule and
+the kernel rejects the derivation:
+
+```lean
+#eval show Except String Unit from Id.run do
+  let α    := Output.atom "Denied"
+  let t    := Term.atom "applicants"
+  let σ    := ({"src_A"} : Finset String)
+  let supp := ({"groupA"} : Finset String)
+  let n    : Nat := 100
+  let f    := clampProb (35 / 100)
+  let p    := clampProb (30 / 100)        -- inside the CI
+
+  let obsCtx : Context := [⟨"applicants", supp, α, .unknown⟩]
+  let obsClaim : TermClaim := ⟨.frequency, t, n, α, f, σ⟩
+  let dObs := Derivation.node .obs [] ⟨obsCtx, .term obsClaim⟩ false
+
+  let mE  : ContextEntry := ⟨"x", supp, α, .exact p⟩
+  let dM  := Derivation.node .identity [] ⟨[mE], .identity mE⟩ false
+
+  let ci      := binomialCI n f p
+  let untrust : TrustClaim := .untrust t n α f p ci
+  let dIUT    := Derivation.node .iUT [dM, dObs]
+                   ⟨[mE] ++ obsCtx, .trust untrust⟩ false
+
+  checkDerivation dIUT
+-- Except.error "IUT: model probability must lie OUTSIDE binomial CI"
+```
+
+The derivation is the same Lean term as before, but the kernel
+refuses it because the rule's side condition fails. To certify
+this audit you would use `IT` (Trust) instead of `IUT`.
+
+A `Derivation` tree is built with
+`Derivation.node ruleName premises sequent independenceWitness` where
+`ruleName : RuleName` is one of the closed enumeration of rule
+constructors (e.g. `.iT`, `.iUT2`, `.update`, `.ePosterior`,
+`.contraction`). Rule-name typos are compile-time errors.
+
+In the success case the kernel verifies, in order: that the
+observation leaf's provenance is non-empty, that the identity
+leaf's constraint is exact, that the declared CI matches
+`binomialCI`, that the model probability lies outside the CI
+(otherwise `IT` would be the right rule), that the conclusion's
+term, sample size, output and frequency match the observation
+premise, and that the conclusion context inherits properly from
+the premises.  Each of these checks corresponds to one possible
+`.error` message in the failure case.
 
 ### Rule constructors
 
