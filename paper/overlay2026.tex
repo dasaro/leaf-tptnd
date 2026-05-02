@@ -1,0 +1,986 @@
+\documentclass{ceurart}
+
+\usepackage{lmodern}
+\usepackage{mathpartir}
+\usepackage{amssymb}
+\usepackage{booktabs}
+\usepackage{stmaryrd}
+\usepackage{url}
+
+% ── compact inference rules ──
+\newcommand{\smark}[1]{\textsc{#1}}
+\newcommand{\HighRisk}{\textsf{HighRisk}}
+\newcommand{\LowRisk}{\textsf{LowRisk}}
+\newcommand{\Denied}{\textsf{Denied}}
+\newcommand{\Trust}{\textbf{Trust}}
+\newcommand{\UTrust}{\textbf{UTrust}}
+\newcommand{\Excess}{\textbf{Excess}}
+\newcommand{\NoExcess}{\textbf{NoExcess}}
+\newcommand{\wf}{\mathsf{wf}}
+\newcommand{\CI}{\mathcal{P}}
+\newcommand{\CItwo}{\mathcal{Q}}
+
+\begin{document}
+
+\copyrightyear{2026}
+\copyrightclause{Copyright for this paper by its authors.
+  Use permitted under Creative Commons License Attribution 4.0
+  International (CC BY 4.0).}
+\conference{OVERLAY 2026: 8th Workshop on Artificial Intelligence
+  and Formal Verification, Logic, Automata, and Synthesis,
+  co-located with AI*IA 2026}
+
+\title{Leaf: Machine-Checked Fairness Certificates\\via Trustworthy Probabilistic Typed Natural Deduction}
+
+\author[1]{Fabio Aurelio D'Asaro}[
+  orcid=0000-0002-6254-2372,
+  email=fabio.dasaro@unimi.it]
+
+\address[1]{Department of Philosophy ``Piero Martinetti,''
+  University of Milan, Italy}
+
+\begin{abstract}
+We present \emph{Leaf}, a Lean~4 implementation of a core fragment of
+Trustworthy Probabilistic Typed Natural Deduction (TPTND).
+Leaf type-checks derivation trees whose leaves are empirical observations
+and whose internal nodes are introduction or elimination rules for
+probabilistic connectives, producing machine-checked
+\emph{fairness certificates}.
+All arithmetic uses exact rationals; confidence intervals
+use the score-test approximation.
+We extend the original one-sample trust rules with two-sample
+variants \textsc{IT2}/\textsc{IUT2} that compare two observed
+populations directly, and we describe the four-stage workflow that
+takes group-level summary statistics through claim selection and
+derivation construction to a verified certificate.
+Two case studies on public data illustrate the approach:
+(i)~the ProPublica COMPAS recidivism data (6\,172 defendants,
+reproducing the headline racial-bias finding as a certified
+\UTrust{} derivation), and
+(ii)~HMDA mortgage-lending data for Delaware
+(55\,000 originated-or-denied applications across 2022--2023, demonstrating
+multi-year temporal composition via \textsc{Update},
+intersectional analysis, and depth-4 derivation chains).
+The full source, data pipelines, and all derivations are
+publicly available.
+\end{abstract}
+
+\begin{keywords}
+algorithmic fairness \sep
+typed natural deduction \sep
+proof checking \sep
+Lean~4 \sep
+trust certificates
+\end{keywords}
+
+\maketitle
+
+% ====================================================================
+\section{Introduction}\label{sec:intro}
+% ====================================================================
+
+Automated decision-making systems increasingly affect high-stakes
+outcomes (criminal sentencing, credit scoring, mortgage lending),
+and the question of whether their outputs are \emph{fair} across
+demographic groups has become a central concern in AI
+ethics~\cite{barocas2019fairness}.
+Statistical tests for group-fairness properties (equalized odds,
+calibration, disparate impact) are routinely applied in auditing
+practice, yet the resulting claims are typically embedded in
+narrative reports or Jupyter notebooks, with no formal guarantee
+that the stated assumptions, data, and statistical procedures
+are consistent.
+
+Trustworthy Probabilistic Typed Natural Deduction
+(TPTND)~\cite{dasaro2025tptnd} offers a proof-theoretic alternative.
+TPTND is a natural-deduction calculus whose types are probability
+distributions over finite output alphabets and whose terms carry
+sample-size and provenance annotations.
+Introduction rules for \emph{trust} and \emph{untrust} internalize
+a confidence-interval membership test: if the model probability $p$
+lies inside the interval $[\ell,h]$ computed from observed data, the
+calculus derives $\Trust$; otherwise $\UTrust$.
+Elimination rules extract the interval into the typing context,
+enabling further composition.
+
+In this paper we describe \textbf{Leaf}, a Lean~4 implementation
+of a core TPTND fragment.  Our contributions are:
+%
+\begin{enumerate}
+\item A \textbf{machine-checkable implementation} of the calculus
+  (Section~\ref{sec:rules}), where every
+  rule is a pure function |Derivation $\to$ CheckM Unit|
+  dispatched by rule name, and all arithmetic is exact rational.
+\item \textbf{Two-sample trust rules} \textsc{IT2} and \textsc{IUT2}
+  (Table~\ref{tab:trust-intro}), which compare two observed
+  populations without designating either as a fixed benchmark.
+\item A \textbf{four-stage auditing workflow} that takes group-level
+  summary statistics through claim selection and derivation
+  construction to a machine-checked certificate
+  (Section~\ref{sec:workflow}).
+\item \textbf{Two case studies} on public data
+  (Section~\ref{sec:cases}): COMPAS recidivism scoring and HMDA
+  mortgage lending, producing derivation trees of depth up to~4.
+\end{enumerate}
+
+% ====================================================================
+\section{The TPTND Calculus}\label{sec:calculus}
+% ====================================================================
+
+\smallskip\noindent
+\textbf{Background.}
+We treat each atomic output $a$ as an event in some implicit
+finite sample space, with $P(a)$ its marginal probability.  The
+output algebra mirrors standard event operations:
+$\overline\alpha$ is the complement, $\alpha+\beta$ is disjoint
+union (the calculus enforces $\alpha \perp_{\text{syn}} \beta$
+syntactically, so $P(\alpha+\beta) = P(\alpha) + P(\beta)$),
+$\alpha \times \beta$ is the joint event under an explicit
+independence witness ($P(\alpha\times\beta) = P(\alpha)P(\beta)$),
+and $\alpha \Rightarrow_p \beta$ encodes the conditional
+$P(\beta\mid\alpha) = p$.  Two modalities of judgement accompany
+distributions: \emph{expected mode} $t_n:\alpha_{\tilde p}$
+records a model-side prediction that the fraction of $n$ samples
+falling in $\alpha$ is $\tilde p$; \emph{frequency mode}
+$t_n:\alpha_f$ records the empirical fraction $f$.  The trust
+rules reconcile the two via score-test confidence intervals
+$\CI(n,f,p)$.
+
+\smallskip\noindent
+We summarize the syntax, judgement forms, and key rules.  The
+full calculus (31~rules across 7~families) appears
+in~\cite{dasaro2025tptnd}; here we present only the rules
+central to the case studies: \textsc{Obs}, \textsc{Update}, and
+the trust family (Table~\ref{tab:trust-intro}).  Our main
+extension is two-sample trust (\textsc{IT2}/\textsc{IUT2}).
+
+\subsection{Syntax}\label{sec:syntax}
+
+\emph{Outputs} are generated by
+$\alpha,\beta ::= a \mid \overline\alpha \mid \alpha+\beta
+  \mid \alpha\times\beta \mid \alpha\Rightarrow_p\beta$,
+where $a$ ranges over a countable set of atomic names and
+$p\in[0,1]$ is the conditional probability annotation on arrows.
+
+\emph{Probability constraints} are
+$c ::= p \mid [\ell,h] \mid \lnot[\ell,h]$,
+with $p,\ell,h \in [0,1]$ and $\ell\le h$.
+The constraint $\lnot[\ell,h]$ records that the relevant
+probability lies \emph{outside} the interval; it is introduced by
+\textsc{EUT}.
+
+\emph{Terms} are $t ::= a \mid \langle t,u\rangle \mid
+  \mathsf{fst}(t) \mid \mathsf{snd}(t) \mid [x]t \mid (t\cdot u)$.
+
+A \emph{context} $\Gamma$ is a finite list of assumptions
+$x : \alpha_c$ equipped with a nonempty support annotation.
+Term sequents carry an explicit provenance index~$\sigma$.
+For product and structural rules we write
+$\Gamma\mathbin{\#_w}\Delta$ when the derivation carries an
+explicit independence witness~$w$.
+
+\subsection{Judgement forms}\label{sec:judge}
+
+The calculus uses ten sequent forms~\cite{dasaro2025tptnd}:
+\begin{center}\small
+\begin{tabular}{@{}ll@{}}
+$\vdash \alpha :: \mathsf{output}$ & output declaration\\
+$\vdash \Gamma$ & distribution declaration\\
+$\Gamma \vdash x : \alpha_c$ & identity (exact model import)\\
+$\Gamma \vdash_\sigma t : \alpha$ & experiment-mode atomic claim\\
+$\Gamma \vdash_\sigma t_n : \alpha_{\tilde p}$ & expected-mode claim\\
+$\Gamma \vdash_\sigma t_n : \alpha_f$ & frequency-mode claim\\
+$\Gamma \vdash \Trust_\CI(t_n:\alpha_f; p,[\ell,h])$
+  & trust certificate\\
+$\Gamma \vdash \UTrust_\CI(t_n:\alpha_f; p,[\ell,h])$
+  & untrust certificate\\
+$\Gamma \vdash \Excess_\CItwo(t_n:\alpha_f \succ u_m:\alpha_g; d,[\ell,h])$
+  & excess certificate\\
+$\Gamma \vdash \NoExcess_\CItwo(t_n:\alpha_f \succ u_m:\alpha_g; d,[\ell,h])$
+  & no-excess certificate\\
+\end{tabular}
+\end{center}
+
+\noindent
+The one-sample confidence interval is
+\(
+  \CI(n,f,p) = f \pm z_{.975}\sqrt{p(1{-}p)/n},
+\)
+clamped to $[0,1]$, where $z_{.975}=1.96$.
+The two-sample interval is
+\(
+  \CItwo(n,m,f,g) = (f{-}g) \pm z_{.975}\sqrt{\hat p(1{-}\hat p)(1/n+1/m)},
+\)
+with $\hat p = (nf{+}mg)/(n{+}m)$.
+
+\subsection{Global admissibility}\label{sec:admiss}
+
+Before any rule fires, the conclusion context must satisfy $\wf(\Gamma)$:
+every constraint is well-formed ($\ell\le h$),
+every support is nonempty,
+and for each variable the sum of exact masses and interval lower bounds
+does not exceed~1.
+
+\subsection{Running example}\label{sec:example}
+
+Consider a simplified lending audit.
+A context $\Gamma$ declares an output type $\Denied$ and
+a benchmark denial rate of $20\%$: $x:\Denied_{0.2}$.
+An auditor observes $n=100$ applicants from group~$A$, of whom $35$
+are denied, recording this via \textsc{Obs}:
+\[
+\Gamma \vdash_{\{\mathit{src}_A\}} t_{100} : \Denied_{0.35}
+\]
+To test whether this observed rate is consistent with the $20\%$
+benchmark, we apply \textsc{IUT}.
+The one-sample CI is
+$\CI(100, 0.35, 0.2) = 0.35 \pm 1.96\sqrt{0.2 \cdot 0.8 / 100}
+  = [0.272, 0.428]$.
+Since $0.2 \notin [0.272, 0.428]$, the calculus derives:
+\[
+\Gamma \vdash \UTrust_\CI(t_{100}:\Denied_{0.35};\; 0.2,\, [0.272, 0.428])
+\]
+This certificate is a self-contained artifact: anyone with the
+checker can verify that the derivation is valid without re-running
+the statistical test or having access to the raw data.
+The next section presents the rules formally.
+
+% ────────────────────────────────────────────────────────────────────
+% Key rules (Obs, Update): inline, not separate tables
+% ────────────────────────────────────────────────────────────────────
+
+\subsection{Key rules}\label{sec:rules}
+
+\noindent
+\textbf{Observation (\textsc{Obs}).}
+The fundamental data-entry rule: given a context entry supporting
+term~$t$, record $n$~observations with empirical frequency~$f$:
+\[
+\inferrule{\sigma\neq\varnothing \quad
+  \exists!\, x{:}\alpha_c\in\Gamma\text{ supporting }t \quad
+  n>0 \quad nf\in\mathbb{N}}
+  {\Gamma \vdash_\sigma t_n : \alpha_f}
+  \;\smark{Obs}
+\]
+The provenance~$\sigma$ (a set of data-source identifiers) tracks
+which observations contribute to a claim.
+
+\smallskip\noindent
+\textbf{Update (\textsc{Update}).}
+Pools two frequency claims with disjoint provenance into a
+combined weighted frequency:
+\[
+\inferrule{\Gamma\vdash_{\sigma_1} t_n:\alpha_f \quad
+           \Gamma\vdash_{\sigma_2} t_m:\alpha_g \quad
+           \sigma_1\cap\sigma_2=\varnothing}
+  {\Gamma\vdash_{\sigma_1\uplus\sigma_2}
+     t_{n+m}:\alpha_{\frac{nf+mg}{n+m}}}
+  \;\smark{Update}
+\]
+
+\smallskip\noindent
+\textbf{Identity (\textsc{Identity}).}
+Imports a model probability from the context:
+$\inferrule{x : \alpha_p \in \Gamma}{\Gamma \vdash x : \alpha_p}$.
+
+\smallskip\noindent
+The remaining rules (output formation, products, arrows, sum
+types, structural weakening, and contraction) appear
+in~\cite{dasaro2025tptnd} and are implemented in Leaf but not
+exercised in the case studies below.  The Bayesian-update rules
+\textsc{I-P} and \textsc{E-P} from~\cite{dasaro2025tptnd} are also
+implemented and are exercised once in the COMPAS case study
+(Section~\ref{sec:compas}, Table~\ref{tab:test-summary}).
+
+% ────────────────────────────────────────────────────────────────────
+% TABLE: Trust introduction (one-sample and two-sample)
+% ────────────────────────────────────────────────────────────────────
+\begin{table}[t]
+\small
+\hrule\medskip
+\begin{mathpar}
+\inferrule{\Gamma\vdash x:\alpha_p \quad
+           \Delta\vdash_\sigma u_n:\alpha_f \\
+           \CI(n,f,p)=[\ell,h] \quad p\in[\ell,h]}
+  {\Gamma,\Delta\vdash\Trust_\CI(u_n:\alpha_f; p,[\ell,h])}
+  \;\smark{IT}
+\and
+\inferrule{\Gamma\vdash x:\alpha_p \quad
+           \Delta\vdash_\sigma u_n:\alpha_f \\
+           \CI(n,f,p)=[\ell,h] \quad p\notin[\ell,h]}
+  {\Gamma,\Delta\vdash\UTrust_\CI(u_n:\alpha_f; p,[\ell,h])}
+  \;\smark{IUT}
+\end{mathpar}
+\medskip
+\begin{mathpar}
+\inferrule{\Gamma\vdash_\sigma t_n:\alpha_f \quad
+           \Delta\vdash_\tau u_m:\alpha_g \\
+           \sigma\cap\tau=\varnothing \\
+           \CItwo(n,m,f,g)=[\ell,h] \quad 0\in[\ell,h]}
+  {\Gamma,\Delta\vdash
+    \Trust_\CItwo(t_n:\alpha_f; g,[\ell,h])}
+  \;\smark{IT2}
+\and
+\inferrule{\Gamma\vdash_\sigma t_n:\alpha_f \quad
+           \Delta\vdash_\tau u_m:\alpha_g \\
+           \sigma\cap\tau=\varnothing \\
+           \CItwo(n,m,f,g)=[\ell,h] \quad 0\notin[\ell,h]}
+  {\Gamma,\Delta\vdash
+    \UTrust_\CItwo(t_n:\alpha_f; g,[\ell,h])}
+  \;\smark{IUT2}
+\end{mathpar}
+\medskip\hrule
+\caption{Trust-introduction rules.
+  \textsc{IT}/\textsc{IUT} are one-sample (model $p$ is a known constant).
+  \textsc{IT2}/\textsc{IUT2} (new in this work) are two-sample:
+  both $f$ and $g$ are estimated, and the test is whether
+  $0$ lies inside the CI for $f{-}g$.}
+\label{tab:trust-intro}
+\end{table}
+
+% ────────────────────────────────────────────────────────────────────
+% TABLE 6: Trust elimination & comparison
+% ────────────────────────────────────────────────────────────────────
+\begin{table}[t]
+\small
+\hrule\medskip
+\begin{mathpar}
+\inferrule{\Gamma\vdash\Trust_\CI(u_n:\alpha_f; p,[\ell,h])}
+  {\Gamma, x_u:\alpha_{[\ell,h]} \vdash_\sigma u_n:\alpha_f}
+  \;\smark{ET}
+\and
+\inferrule{\Gamma\vdash\UTrust_\CI(u_n:\alpha_f; p,[\ell,h])}
+  {\Gamma, x_u:\alpha_{\lnot[\ell,h]} \vdash_\sigma u_n:\alpha_f}
+  \;\smark{EUT}
+\\
+\inferrule{\Gamma, x_u:\alpha_c \vdash
+    \Trust_\CI(u_n:\alpha_f; p,[\ell,h]) \\
+    p\in c}
+  {\Gamma, x_u:\alpha_p \vdash_\sigma u_n:\alpha_{\tilde p}}
+  \;\smark{ET$^{\text{ex}}$}
+\end{mathpar}
+\medskip
+\begin{mathpar}
+\inferrule{\Gamma\vdash_\sigma t_n:\alpha_f \quad
+           \Delta\vdash_\tau u_m:\alpha_g \\
+           \sigma\cap\tau=\varnothing \quad
+           \CItwo(n,m,f,g)=[\ell,h] \quad 0\notin[\ell,h]}
+  {\Gamma,\Delta\vdash\Excess_\CItwo(
+    t_n:\alpha_f \succ u_m:\alpha_g;\, f{-}g,\, [\ell,h])}
+  \;\smark{IEx}
+\\
+\inferrule{\Gamma\vdash_\sigma t_n:\alpha_f \quad
+           \Delta\vdash_\tau u_m:\alpha_g \\
+           \sigma\cap\tau=\varnothing \quad
+           \CItwo(n,m,f,g)=[\ell,h] \quad 0\in[\ell,h]}
+  {\Gamma,\Delta\vdash\NoExcess_\CItwo(
+    t_n:\alpha_f \sim u_m:\alpha_g;\, f{-}g,\, [\ell,h])}
+  \;\smark{INEx}
+\end{mathpar}
+\medskip\hrule
+\caption{Trust elimination, comparison, and comparison-elimination rules.
+  \textsc{EEx} and \textsc{ENEx} (not shown) re-enter the frequency
+  layer under an excess or no-excess certificate, shifting the
+  left observation by a model-derived interval.}
+\label{tab:trust-elim}
+\end{table}
+
+% ====================================================================
+\section{Leaf: Implementation in Lean 4}\label{sec:impl}
+% ====================================================================
+
+\subsection{Kernel}\label{sec:arch}
+
+Leaf is approximately 1\,700 lines of Lean~4: a read-only kernel
+(probability arithmetic, well-formedness, and one checker per
+rule) surfaced through a single entry point,
+$\texttt{checkDerivation}: \mathit{Derivation} \to
+\mathtt{Except\,String\,Unit}$, which traverses a derivation tree
+and either returns successfully, in which case the tree
+\emph{is} the certificate, or yields an error message naming the
+failing premise.
+Three type-system features keep the kernel sound by construction.
+A probability is wrapped in a $\mathtt{Prob}$ structure carrying
+proof witnesses of $0\le q\le 1$ at construction time, so an
+ill-formed probability is unrepresentable.  The checking monad
+forces every rule to return either a checked result or an
+explicit error: silent failures are not expressible.  Rule names
+are a closed inductive datatype, so the dispatcher is
+exhaustively type-checked and a misspelled rule is a
+compile-time, not a runtime, error.
+$\texttt{checkDerivation}$ is declared \texttt{partial} because
+the recursion over the premise list is opaque to Lean's
+structural-recursion checker; a maliciously crafted cyclic
+``tree'' would therefore not terminate, and a well-founded
+variant on tree depth is left for future work.  In every
+case-study derivation the recursion returns immediately.
+
+\subsection{Rational arithmetic and provenance}\label{sec:arith}
+
+All arithmetic is exact rational ($\mathbb{Q}$); the $[0,1]$
+bounds are enforced as type-level proof obligations on every
+probability value.
+
+Square roots for the CI standard-error term are approximated by
+a rational Newton iteration (15~steps), followed by rounding to
+six decimal places to keep denominators bounded.
+The $z$-value for the 95\% two-sided interval is the rational
+$49/25 = 1.96$.
+%
+The square-root rounding is the one place where Leaf is not bit-exact:
+the rounded value can fall on either side of the true $\sqrt{}$ by up to
+$5\cdot10^{-7}$, so each CI endpoint is accurate to within
+$\approx z \cdot 5\cdot10^{-7} \approx 10^{-6}$.
+A derivation in which the model probability $p$ falls within
+this tolerance of an interval boundary is therefore not safely
+decidable by Leaf; we treat it as a known soundness boundary
+rather than a guaranteed verdict, and none of the case-study
+derivations sit in this regime.
+
+\smallskip\noindent
+\textbf{Provenance and probability conservation.}
+The provenance index $\sigma$ has two regimes:
+\textsc{I+}, \textsc{E+$_{L,R}$}, \textsc{I$\times$},
+\textsc{E$\times_{L,R}$}, \textsc{E$\to$} require all three claims
+to share $\sigma$ (disjoint events on one batch); \textsc{Update},
+\textsc{IT2}/\textsc{IUT2}, \textsc{IEx}/\textsc{INEx} require the
+two premise provenances to be \emph{disjoint} with the
+conclusion's $\sigma$ their union (independent batches).
+Without this discipline the textbook attack
+of~\cite{dasaro2025tptnd},
+\[
+\dfrac{\Gamma \vdash_{\sigma_A} t_4:\alpha_{3/4} \quad
+       \Gamma \vdash_{\sigma_B} t_4:\beta_{3/4}}
+      {\Gamma \vdash_? t_4:(\alpha+\beta)_{3/2}}\;\smark{I+}
+\]
+would derive a probability of $3/2$.  In Leaf the rule layer
+rejects the $\sigma_A \neq \sigma_B$ premises before any
+arithmetic runs, and as a backstop the value-level primitives
+\texttt{probAdd}, \texttt{probSub}, \texttt{probDiv} and
+\texttt{weightedFreq} return \texttt{Option Prob} and fail
+whenever a result would fall outside $[0,1]$.  A
+same-$\sigma$ attack with $p+q>1$ is blocked by the value layer;
+a mismatched-$\sigma$ attack with $p+q\le 1$ would slip past
+the value layer and is caught only by the rule layer.
+
+\subsection{Two-sample trust}\label{sec:it2}
+
+The original calculus~\cite{dasaro2025tptnd} provides one-sample
+rules \textsc{IT}/\textsc{IUT}, which compare an observed frequency
+against a known model probability.
+In practice, however, the ``model'' is often itself estimated from
+data (e.g.\ the White denial rate is not a physical constant but a
+sample statistic).
+We add \textsc{IT2} and \textsc{IUT2}
+(Table~\ref{tab:trust-intro}), which take two frequency
+observations as premises and use the pooled score-test interval
+$\CItwo$.
+The test is: if $0\in\CItwo(n,m,f,g)$ then
+\Trust{} (no significant difference); otherwise \UTrust{}.
+The two-sample rules require disjoint provenances
+$\sigma\cap\tau=\varnothing$, preventing a group from being
+compared with (a subset of) itself.
+
+\subsection{User workflow: producing a fairness
+  certificate}\label{sec:workflow}
+
+An auditor produces a Leaf certificate in four stages.
+
+\smallskip\noindent
+\textbf{1. Group-level summary statistics.}
+The auditor extracts sample sizes and event counts for the
+demographic strata of interest.  No Leaf-specific tooling is
+required at this stage: SQL, pandas, or R suffice.  For COMPAS
+(Section~\ref{sec:compas}) the inputs are sample sizes and
+high-risk counts for each (race, sex, recidivism-status) cell;
+for HMDA (Section~\ref{sec:hmda}) they are denial counts indexed
+by year, race, and sex.  This is the only point at which the
+auditor needs raw data.
+
+\smallskip\noindent
+\textbf{2. Claim selection.}
+The fairness question fixes which Leaf rule closes the
+derivation.  Common patterns:
+\begin{itemize}
+\item \emph{observed rate is consistent with a known benchmark
+  $p$} $\to$ \textsc{IT} / \textsc{IUT};
+\item \emph{two observed populations are statistically
+  indistinguishable} $\to$ \textsc{IT2} / \textsc{IUT2};
+\item \emph{rate increased significantly between two periods}
+  $\to$ \textsc{IUT2} on year-stratified \textsc{Obs} leaves;
+\item \emph{the effect persists after pooling sub-cohorts}
+  $\to$ \textsc{Update} chained with one of the above.
+\end{itemize}
+\noindent
+The English statement of the audit determines the rule signature
+unambiguously, with \textsc{IT}/\textsc{IUT}/\textsc{IT2}/\textsc{IUT2}
+playing the role that classical hypothesis tests play in a
+statistical-software workflow.
+
+\smallskip\noindent
+\textbf{3. Derivation construction.}
+The derivation tree mirrors the structure of the auditor's
+English description.  Each leaf is an \textsc{Obs} node carrying
+one $(n, f, \sigma)$ triple from stage~1; internal nodes apply
+the rules from stage~2.  Rule arity, output-type matching, and
+provenance disjointness are fixed by the rule, leaving only the
+data values as free parameters.
+
+\smallskip\noindent
+\textbf{4. Verification and certification.}
+A single call to \texttt{checkDerivation} traverses the tree,
+applies the per-rule checker at each node, and returns either
+\texttt{Ok} (the derivation \emph{is} the certificate) or an
+error message that identifies the failing premise.  The
+certificate is a self-contained inductive value: its validity is
+independent of the data and tools used to produce it, and any
+party reconstructing the derivation has the certificate.  Every
+case-study derivation re-checks in well under a second.
+
+The kernel covers stages~2--4; stage~1 remains the auditor's
+responsibility.  A tabular-data front-end and a certificate
+serialization format are natural next steps.
+
+\subsection{Fairness measures expressible in TPTND}\label{sec:measures}
+
+TPTND directly encodes any group-fairness criterion that reduces
+to a difference-of-proportions test on group-conditional event
+probabilities.  In the standard
+taxonomy~\cite{barocas2019fairness}:
+
+\begin{itemize}
+\item \textbf{Statistical parity} ($P(\hat Y{=}1\mid A{=}a)$
+  equal across groups): encoded as \textsc{IT2}/\textsc{IUT2}
+  on raw acceptance rates; Tree~A in Section~\ref{sec:hmda} is
+  a one-sample variant against a fixed reference.
+\item \textbf{Equalized odds}~\cite{hardt2016equality}
+  ($P(\hat Y{=}1\mid A{=}a, Y{=}y)$ equal across $a$ for each
+  $y$): encoded as \textsc{IT2}/\textsc{IUT2} on the
+  $Y$-conditioned subsets.  The ProPublica headline derivation
+  (Section~\ref{sec:compas}) is the false-positive case
+  ($y{=}0$); the \emph{equal-opportunity}
+  relaxation~\cite{hardt2016equality} uses only $y{=}1$.
+\item \textbf{Predictive parity / calibration}~\cite{chouldechova2017fair}
+  ($P(Y{=}1\mid \hat Y{=}1, A{=}a)$ equal across $a$): encoded
+  as \textsc{IT2} on the $\hat Y$-conditioned subsets.
+  Chouldechova's incompatibility result implies that the
+  equalized-odds violation we certify on COMPAS
+  (Section~\ref{sec:compas}) cannot coexist with calibration on
+  the same data, since racial base rates differ.
+\end{itemize}
+
+\noindent
+Two important families fall outside this fragment.
+\emph{Disparate-impact ratio} (an $80\%$ rule on
+$P(\hat Y{=}1\mid A{=}0)/P(\hat Y{=}1\mid A{=}1)$) is
+multiplicative and would require an Excess-style family with
+division.  \emph{Individual} and \emph{counterfactual}
+fairness require causal structure, addressed by the
+causal-label extensions of
+TPTND~\cite{ceragioli2025causal1,ceragioli2025causal2}.
+
+% ====================================================================
+\section{Case Studies}\label{sec:cases}
+% ====================================================================
+
+\subsection{COMPAS: recidivism risk scoring}\label{sec:compas}
+
+The first case study uses the ProPublica COMPAS
+dataset~\cite{angwin2016machine}
+(\texttt{compas-scores-two-years.csv}, filtered to 6\,172
+defendants by the published criteria).
+We construct 12~Lean-validated derivation trees, including:
+
+\smallskip\noindent
+\textbf{ProPublica's headline (\UTrust{}).}\;
+ProPublica's article reports false-positive rates of $44.9\%$ for
+Black and $23.5\%$ for White non-recidivists~\cite{angwin2016machine}.
+On the published filter (\texttt{days\_b\_screening\_arrest}~$\in[-30,30]$,
+\texttt{is\_recid}~$\neq -1$, \texttt{c\_charge\_degree}~$\neq$~\texttt{O},
+\texttt{score\_text}~$\neq$~\texttt{N/A}, yielding 6\,172 cases) the
+corresponding observed rates are $641/1514 \approx 42.3\%$ for Black
+and $282/1281 = 94/427 \approx 22.0\%$ for White, preserving the
+${\sim}1.9\times$ disparity.
+Let $\Gamma_{BN}$ carry the non-exact assumption $\HighRisk_{[0,1]}$
+for the Black cohort and $\Gamma^{\text{mdl}}_{WN} \vdash x_{WN}:\HighRisk_{94/427}$
+import the White benchmark; write
+$\Theta_{FP} = \Gamma^{\text{mdl}}_{WN}, \Gamma_{BN}$ and
+$\sigma_B = \sigma_m \uplus \sigma_f$.
+The Leaf-verified derivation is:
+%
+\[
+\scriptstyle
+\inferrule{
+  \Gamma_{BN}\vdash_{\sigma_m} u_{1168}:\HighRisk_{255/584} \\
+  \Gamma_{BN}\vdash_{\sigma_f} u_{346}:\HighRisk_{131/346}
+}{
+  \Gamma_{BN}\vdash_{\sigma_B} u_{1514}:\HighRisk_{641/1514}
+}\;\smark{Update}
+\]
+\[
+\scriptstyle
+\inferrule{
+  \Gamma^{\text{mdl}}_{WN}\vdash x_{WN}:\HighRisk_{94/427} \\
+  \Gamma_{BN}\vdash_{\sigma_B} u_{1514}:\HighRisk_{641/1514} \\
+  94/427 \notin \CI(1514,\, 641/1514,\, 94/427) = [0.4025, 0.4443]
+}{
+  \Theta_{FP}\vdash \UTrust_\CI(u_{1514}:\HighRisk_{641/1514};\;
+    94/427,\, [0.4025, 0.4443])
+}\;\smark{IUT}
+\]
+\[
+\scriptstyle
+\inferrule{
+  \Theta_{FP}\vdash \UTrust_\CI(u_{1514}:\HighRisk_{641/1514};\;
+    94/427,\, [0.4025, 0.4443])
+}{
+  \Theta_{FP}, x_{BN}:\HighRisk_{\lnot[0.4025, 0.4443]}
+   \vdash_{\sigma_B} u_{1514}:\HighRisk_{641/1514}
+}\;\smark{EUT}
+\]
+%
+The resulting term claim, with $\HighRisk_{\lnot[0.4025, 0.4443]}$
+recorded in its typing context, is what a regulator would receive
+and re-check.
+
+\smallskip\noindent
+\textbf{Bayesian belief update (depth~2).}\;
+A pilot auditor entertaining three hypotheses about the FPR
+($a_1{=}1/6$, $a_2{=}1/3$, $a_3{=}1/2$) with prior weights
+$b_i{=}a_i$ (summing to~1) observes $s{=}2$ flagged among
+$n{=}5$ pilot defendants.  \textsc{I-P} introduces the prior
+family from three exact identity premises; \textsc{E-P}
+produces the posterior under hypothesis~$H_j$:
+\[
+\textstyle
+P(H_j\mid d) =
+\frac{a_j^s (1-a_j)^{n-s}\, b_j}
+     {\sum_i a_i^s (1-a_i)^{n-s}\, b_i}.
+\]
+For~$H_3$ this gives $729/1366 \approx 53.4\%$ (up from $50\%$)
+while $H_1$ drops to $125/1366 \approx 9.2\%$.  The computation
+is exact rational and the conclusion is a verified posterior
+usable as a model premise in a downstream \textsc{IT}.
+
+\smallskip\noindent
+\textbf{A genuine non-finding (\Trust{}).}\;
+Among Black recidivists, the female lower-risk rate is $62/203$
+and the male benchmark is $411/1458 = 137/486$.
+Since $\CI(203, 62/203, 137/486) = [0.2435, 0.3673]$
+and $137/486 \approx 0.2819 \in [0.2435, 0.3673]$,
+the calculus derives \Trust{} and \textsc{ET$^{\text{ex}}$}
+re-enters the expected layer with the trusted exact value.
+
+\subsection{HMDA: mortgage lending fairness}\label{sec:hmda}
+
+The second case study uses Home Mortgage Disclosure Act (HMDA)
+data for Delaware, years 2022 and 2023, downloaded from the
+CFPB Data Browser.\footnote{%
+\url{https://ffiec.cfpb.gov/data-browser/?category=states&items=DE}}
+HMDA is a federally mandated dataset under Regulation~C
+(12~CFR~1003), making the ``transferable certificate'' framing
+directly grounded in actual regulatory practice.
+
+After restricting to originated ($\texttt{action\_taken}=1$) and
+denied ($\texttt{action\_taken}=3$) applications, we obtain
+the summary in Table~\ref{tab:hmda-data}.
+
+\begin{table}[t]
+\small
+\centering
+\begin{tabular}{@{}llrrr@{}}
+\toprule
+Year & Group & Denied & Total & Rate \\
+\midrule
+2022 & White & 4\,914  & 24\,614 & 19.96\% \\
+     & Black & 2\,409  & 7\,142  & 33.73\% \\
+2023 & White & 3\,908  & 17\,355 & 22.52\% \\
+     & Black & 2\,035  & 5\,394  & 37.73\% \\
+\midrule
+2023 & Black Male   &  741 & 1\,825 & 40.60\% \\
+     & White Male   & 1\,466 & 5\,450 & 26.90\% \\
+     & Black Female &  909 & 2\,341 & 38.83\% \\
+     & White Female & 1\,234 & 4\,634 & 26.63\% \\
+\bottomrule
+\end{tabular}
+\caption{HMDA Delaware denial rates, 2022--2023.}
+\label{tab:hmda-data}
+\end{table}
+
+We build seven derivation trees, organised in five cases that
+each highlight a different aspect of the certificate framework:
+
+\smallskip\noindent
+\textbf{Tree~A: reference-rate trust (depth~2).}\;
+An \textsc{Identity} leaf pins a $20\%$ reference denial rate; an
+\textsc{Obs} leaf records the White DE~2022 frequency
+($4914/24614$).
+\textsc{IT} derives \Trust{}: the observed rate is consistent
+with the reference.
+Every assumption (reference value, data source, sample size,
+statistical test) is explicit in the certificate and
+machine-checkable.
+
+\smallskip\noindent
+\textbf{Tree~B: temporal composition (depth~3).}\;
+Two \textsc{Obs} leaves per racial group (one for 2022, one for
+2023) are combined via \textsc{Update} into pooled frequencies.
+The derivation structure is:
+\[
+\scriptstyle
+\inferrule{
+  \inferrule{
+    \Gamma\vdash_{\sigma_{22}} t:\Denied_{2409/7142} \quad
+    \Gamma\vdash_{\sigma_{23}} t:\Denied_{2035/5394}
+  }{
+    \Gamma\vdash_{\sigma_B} t_{12536}:\Denied_{4444/12536}
+  }\;\smark{Upd.}
+  \\\\
+  \inferrule{
+    \Gamma\vdash_{\tau_{22}} u:\Denied_{4914/24614} \quad
+    \Gamma\vdash_{\tau_{23}} u:\Denied_{3908/17355}
+  }{
+    \Gamma\vdash_{\tau_W} u_{41969}:\Denied_{8822/41969}
+  }\;\smark{Upd.}
+}{
+  \Gamma\vdash\UTrust_\CItwo(\ldots;\, [0.1357, 0.1528])
+}\;\smark{IUT2}
+\]
+Since $0 \notin [0.1357, 0.1528]$, it yields \UTrust{}.
+
+\smallskip\noindent
+\textbf{Tree~C: full chain (depth~4).}\;
+\textsc{EUT} appends a single step to Tree~B's
+$\UTrust_\CItwo$ certificate, extracting the observed Black
+frequency into a term claim that carries the complement interval
+$\lnot[0.1357, 0.1528]$ in its typing context:
+\[
+\scriptstyle
+\inferrule{
+  \Gamma \vdash \UTrust_\CItwo(t_{12536}:\Denied_{4444/12536};\;
+    8822/41969,\, [0.1357, 0.1528])
+}{
+  \Gamma, x_u:\Denied_{\lnot[0.1357, 0.1528]}
+    \vdash_{\sigma_B} t_{12536}:\Denied_{4444/12536}
+}\;\smark{EUT}
+\]
+where $\Gamma$ is the joint context of the two pooled cohorts
+inherited from Tree~B.  The depth-4 chain
+(\textsc{Obs}$\to$\textsc{Update}$\to$\textsc{IUT2}$\to$\textsc{EUT})
+is verified end-to-end by a single \texttt{checkDerivation} call.
+
+\smallskip\noindent
+\textbf{Trees~D.1/D.2: intersectional certificates (depth~2).}\;
+Two auditors independently certify Black-vs-White denial gaps for
+males ($741/1825$ vs.\ $1466/5450$, $\CItwo=[0.1126,0.1614]$) and
+females ($909/2341$ vs.\ $1234/4634$, $\CItwo=[0.0990,0.1449]$);
+both derive \UTrust{}.  A regulator verifies both certificates
+with the same kernel without needing access to either auditor's
+raw data.
+
+\smallskip\noindent
+\textbf{Trees~E.1/E.2: year-over-year monitoring (depth~2).}\;
+Black denial rose 2022$\to$2023 from $33.7\%$ to $37.7\%$
+($\CItwo=[0.0230,0.0568]$, \UTrust{}); White from $20.0\%$ to
+$22.5\%$ ($\CItwo=[0.0176,0.0334]$, \UTrust{}); both increases
+are statistically significant.  Persistent national-level racial
+disparities in mortgage lending are documented by the Urban
+Institute~\cite{urban2023}.  Dated certificates accumulate in a
+regulatory audit trail.
+
+\subsection{Summary}
+
+Table~\ref{tab:test-summary} summarizes all Lean-validated
+derivation trees across both case studies.
+
+\begin{table}[t]
+\small\centering
+\begin{tabular}{@{}lllrc@{}}
+\toprule
+Dataset & Derivation & Rules & Depth & Result \\
+\midrule
+COMPAS & Caucasian FNR & \smark{IT} & 2 & \Trust \\
+       & UPDATE chain & \smark{Update} & 2 & pooled \\
+       & AA FNR \S4.3 & \smark{IT} & 2 & \Trust \\
+       & AA FPR gender & \smark{IUT} & 2 & \UTrust \\
+       & ProPublica headline & \smark{Upd.+IUT} & 3 & \UTrust \\
+       & Bayesian & \smark{I-P+E-P} & 2 & posterior \\
+       & Racial FPR & \smark{IEx} & 2 & Excess \\
+       & AA FNR gender & \smark{INEx} & 2 & NoExcess \\
+       & \multicolumn{2}{l}{+ 4 derivations with \smark{IUT2, IT2}} & 2 & varied \\
+\midrule
+HMDA   & Benchmark & \smark{IT} & 2 & \Trust \\
+       & Temporal pool & \smark{Upd.+IUT2} & 3 & \UTrust \\
+       & Full chain & \smark{Upd.+IUT2+EUT} & 4 & extracted \\
+       & Intersect.\ (M) & \smark{IUT2} & 2 & \UTrust \\
+       & Intersect.\ (F) & \smark{IUT2} & 2 & \UTrust \\
+       & Y-o-Y Black & \smark{IUT2} & 2 & \UTrust \\
+       & Y-o-Y White & \smark{IUT2} & 2 & \UTrust \\
+\bottomrule
+\end{tabular}
+\caption{Lean-validated derivation trees (all pass
+  \texttt{checkDerivation}).}
+\label{tab:test-summary}
+\end{table}
+
+
+% ====================================================================
+\section{Related Work}\label{sec:related}
+% ====================================================================
+
+TPTND was introduced by D'Asaro, Genco, and
+Primiero~\cite{dasaro2025tptnd}; a companion $\lambda$-calculus
+formulation appears in~\cite{genco2023lambda}, and extensions
+with causal labels by Ceragioli and
+Primiero~\cite{ceragioli2025causal1,ceragioli2025causal2}.
+The \textsc{Brio} tool~\cite{brio2023} evaluates bias via distance
+metrics but does not produce derivation trees.
+The certifying-algorithms pattern of separating producer from
+verifier is classical~\cite{necula1997pcc,mcconnell2011certifying}.
+VeriFair~\cite{bastani2019verifair} and
+FairSquare~\cite{albarghouthi2017fairsquare} verify fairness
+properties \emph{a priori} (of the model); Leaf instead produces
+\emph{a posteriori} certificates from observed data, checkable
+without model access.  Lean~4~\cite{moura2021lean4} has been used
+for large-scale mathematical formalization but, to our knowledge,
+not previously for algorithmic-fairness auditing.  Statistical
+toolkits such as Fairlearn~\cite{bird2020fairlearn},
+AIF360~\cite{bellamy2019aif360}, and
+What-If~\cite{wexler2019whatif} compute metrics but do not
+produce formally verified certificates: Leaf's architectural
+difference is the separation of the (potentially biased)
+\emph{producer} from the (small, auditable) \emph{checker}.
+
+% ====================================================================
+\section{Conclusion}\label{sec:concl}
+% ====================================================================
+
+We have presented Leaf, a Lean~4 implementation of a core TPTND
+fragment that type-checks derivation trees over real-world
+fairness data.
+The implementation adds two-sample trust rules (\textsc{IT2}/\textsc{IUT2}),
+specifies a four-stage workflow that takes raw group-level
+statistics through claim selection and derivation construction
+to a verified certificate, and exhibits the workflow on two
+public datasets spanning criminal justice and mortgage lending.
+
+The main limitation is that the \texttt{Prob} type is clamped
+to $[0,1]$, which loses information when the two-sample CI
+for a negative difference falls entirely below zero.
+In practice this is handled by ordering the premises so
+that the larger rate appears first.
+Future work includes signed-difference probability handling,
+connecting to the causal-label extensions
+of~\cite{ceragioli2025causal1}, and a front-end that constructs
+derivation trees from tabular data so domain experts can produce
+certificates without writing Lean.
+
+% ====================================================================
+% References
+% ====================================================================
+\begin{thebibliography}{99}
+
+\bibitem{dasaro2025tptnd}
+F.\,A.\ D'Asaro, F.\,A.\ Genco, G.\ Primiero,
+``Checking trustworthiness of probabilistic computations in a
+typed natural deduction system,''
+\emph{J.\ Logic and Computation}, vol.~35, no.~6, 2025.
+\url{https://doi.org/10.1093/logcom/exaf003}.
+
+\bibitem{genco2023lambda}
+F.\,A.\ Genco, G.\ Primiero,
+``A typed lambda-calculus for establishing trust in probabilistic programs,''
+arXiv:2302.00958, 2023.
+
+\bibitem{ceragioli2025causal1}
+L.\ Ceragioli, G.\ Primiero,
+``A proof system with causal labels (Part~I):
+checking individual fairness and intersectionality,''
+in \emph{OVERLAY 2025}, CEUR-WS vol.~4142, 2025, pp.~173--179.
+\url{https://ceur-ws.org/Vol-4142/paper19.pdf}.
+
+\bibitem{ceragioli2025causal2}
+L.\ Ceragioli, G.\ Primiero,
+``A proof system with causal labels (Part~II):
+checking counterfactual fairness,''
+in \emph{OVERLAY 2025}, CEUR-WS vol.~4142, 2025, pp.~181--187.
+\url{https://ceur-ws.org/Vol-4142/paper20.pdf}.
+
+\bibitem{brio2023}
+G.\ Coraglia, F.\,A.\ D'Asaro, F.\,A.\ Genco \emph{et al.},
+``BRIOxAlkemy: a bias detecting tool,''
+in \emph{BEWARE@AI*IA 2023}, CEUR-WS vol.~3615, 2023.
+
+\bibitem{angwin2016machine}
+J.\ Angwin, J.\ Larson, S.\ Mattu, L.\ Kirchner,
+``Machine bias,''
+\emph{ProPublica}, May 23, 2016.
+
+\bibitem{urban2023}
+L.\ Goodman, J.\ Zhu,
+``What different denial rates can tell us about racial
+disparities in the mortgage market,''
+\emph{Urban Institute}, 2023.
+
+\bibitem{barocas2019fairness}
+S.\ Barocas, M.\ Hardt, A.\ Narayanan,
+\emph{Fairness and Machine Learning: Limitations and Opportunities},
+fairmlbook.org, 2019.
+
+\bibitem{hardt2016equality}
+M.\ Hardt, E.\ Price, N.\ Srebro,
+``Equality of opportunity in supervised learning,''
+in \emph{NeurIPS}, 2016, pp.~3323--3331.
+
+\bibitem{chouldechova2017fair}
+A.\ Chouldechova,
+``Fair prediction with disparate impact: a study of bias in
+recidivism prediction instruments,''
+\emph{Big Data}, vol.~5, no.~2, pp.~153--163, 2017.
+
+\bibitem{necula1997pcc}
+G.\,C.\ Necula,
+``Proof-carrying code,''
+in \emph{POPL '97}, ACM, 1997, pp.~106--119.
+
+\bibitem{mcconnell2011certifying}
+R.\,M.\ McConnell, K.\ Mehlhorn, S.\ N\"aher, P.\ Schweitzer,
+``Certifying algorithms,''
+\emph{Computer Science Review}, vol.~5, no.~2, pp.~119--161, 2011.
+
+\bibitem{bastani2019verifair}
+O.\ Bastani, X.\ Zhang, A.\ Solar-Lezama,
+``Probabilistic verification of fairness properties via concentration,''
+in \emph{Proc.\ ACM Program.\ Lang.\ (OOPSLA)}, 2019,
+article~118.
+
+\bibitem{albarghouthi2017fairsquare}
+A.\ Albarghouthi, L.\ D'Antoni, S.\ Drews, A.\,V.\ Nori,
+``FairSquare: probabilistic verification of program fairness,''
+in \emph{Proc.\ ACM Program.\ Lang.\ (OOPSLA)}, 2017,
+article~80.
+
+\bibitem{moura2021lean4}
+L.\ de Moura, S.\ Ullrich,
+``The Lean~4 theorem prover and programming language,''
+in \emph{CADE-28}, LNCS vol.~12699, 2021, pp.~625--635.
+
+\bibitem{bird2020fairlearn}
+S.\ Bird \emph{et al.},
+``Fairlearn: a toolkit for assessing and improving fairness in AI,''
+Microsoft Research, Tech.\ Rep.\ MSR-TR-2020-32, 2020.
+
+\bibitem{bellamy2019aif360}
+R.\,K.\,E.\ Bellamy \emph{et al.},
+``AI Fairness 360: an extensible toolkit for detecting and mitigating
+algorithmic bias,''
+\emph{IBM J.\ Res.\ Dev.}, vol.~63, no.~4/5, 2019.
+
+\bibitem{wexler2019whatif}
+J.\ Wexler \emph{et al.},
+``The What-If Tool: interactive probing of machine learning models,''
+\emph{IEEE TVCG}, vol.~26, no.~1, pp.~56--65, 2020.
+
+\end{thebibliography}
+
+\end{document}

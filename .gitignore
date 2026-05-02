@@ -1,0 +1,40 @@
+# Lean / Lake build artifacts
+.lake/
+
+# Claude Code session metadata
+.claude/
+
+# Editor / OS
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
+
+# Backup / temp
+*.bak
+*.orig
+
+# LaTeX intermediates
+paper/*.aux
+paper/*.log
+paper/*.toc
+paper/*.bbl
+paper/*.blg
+paper/*.out
+paper/*.synctex.gz
+paper/*.fdb_latexmk
+paper/*.fls
+paper/*.abs
+paper/pdfa.xmpi
+paper/auto/
+paper/ceurart.zip
+paper/CEURART/
+
+# Misc
+/tmp/
+*.tar.gz
+
+# Internal references (not part of public artifact)
+TPTND_Lean_Design.md
+tptnd_lean.pdf
