@@ -15,21 +15,8 @@
 *.bak
 *.orig
 
-# LaTeX intermediates
-paper/*.aux
-paper/*.log
-paper/*.toc
-paper/*.bbl
-paper/*.blg
-paper/*.out
-paper/*.synctex.gz
-paper/*.fdb_latexmk
-paper/*.fls
-paper/*.abs
-paper/pdfa.xmpi
-paper/auto/
-paper/ceurart.zip
-paper/CEURART/
+# Paper sources are not part of the public artifact
+paper/
 
 # Misc
 /tmp/
