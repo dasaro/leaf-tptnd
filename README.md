@@ -16,12 +16,11 @@ Requires Lean 4 via [`elan`](https://leanprover-community.github.io/install/)
 and `lake`. The pinned toolchain is in `lean-toolchain`.
 
 ```bash
-lake build                                    # builds the library + 5 binaries
+lake build                                    # builds the library + 4 binaries
 ./.lake/build/bin/tptnd_tests                 # 13 acceptance + 7 negative tests
 ./.lake/build/bin/compas_audit                # numerical comparison vs ProPublica
 ./.lake/build/bin/compas_from_data            # 12 COMPAS case-study derivations
 ./.lake/build/bin/hmda_showcase               # 6 HMDA case-study derivations
-./.lake/build/bin/pp_deep                     # deep ProPublica certificate (Obs→I+→Update→IUT2→EUT)
 ```
 
 Each binary exits `0` when every derivation passes the kernel and nonzero
@@ -38,14 +37,6 @@ otherwise; the runners are CI-friendly.
 | §4.2 HMDA Tree B (temporal pool)       | `hmda_showcase`     | `Update`×2 + `IUT2` (depth 3)            |
 | §4.2 HMDA Trees C.1/C.2 (intersect.)   | `hmda_showcase`     | `IUT2` (depth 2)                         |
 | §4.2 HMDA Trees D.1/D.2 (year-over-yr) | `hmda_showcase`     | `IUT2` (depth 2)                         |
-| Appendix: deep ProPublica (companion)  | `pp_deep`           | `Obs`+`I+`+`Update`+`IUT2`+`EUT` (d. 5)  |
-
-A standalone PDF appendix walking through the deep ProPublica
-certificate top-down, mapping each rule to a step of the published
-ProPublica methodology, is at
-[`appendix/deep-derivation.pdf`](appendix/deep-derivation.pdf).
-The Lean source for the same certificate is
-[`TPTND/PPDeep.lean`](TPTND/PPDeep.lean).
 
 ## User-facing entry point
 
