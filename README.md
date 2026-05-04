@@ -1,14 +1,12 @@
 # TPTND-Lean
 
-Lean 4 implementation of a core fragment of **Trustworthy Probabilistic
-Typed Natural Deduction (TPTND)**, used to produce machine-checked
-fairness certificates from group-level statistics.
+A Lean 4 implementation of a core fragment of **Trustworthy
+Probabilistic Typed Natural Deduction (TPTND)**, producing
+machine-checked fairness certificates from group-level statistics.
 
-This repository accompanies the submission to **OVERLAY 2026**
-*"Fairness Certificates via a Lean-Backed Probabilistic Typed
-Deduction"* by F. A. D'Asaro and G. Primiero.  Only the
-implementation, data pipelines, and case-study derivations are
-hosted here; the paper sources are kept private.
+Companion artefact to the OVERLAY 2026 submission *"Fairness
+Certificates via a Lean-Backed Probabilistic Typed Deduction"* by
+F. A. D'Asaro and G. Primiero.
 
 ## Quick start
 
@@ -23,8 +21,8 @@ lake build                                    # builds the library + 4 binaries
 ./.lake/build/bin/hmda_showcase               # 6 HMDA case-study derivations
 ```
 
-Each binary exits `0` when every derivation passes the kernel and nonzero
-otherwise; the runners are CI-friendly.
+Each binary exits `0` when every derivation passes the kernel and
+nonzero otherwise.
 
 ## Mapping paper sections to derivations
 
@@ -38,7 +36,7 @@ otherwise; the runners are CI-friendly.
 | §4.2 HMDA Trees C.1/C.2 (intersect.)   | `hmda_showcase`     | `IUT2` (depth 2)                         |
 | §4.2 HMDA Trees D.1/D.2 (year-over-yr) | `hmda_showcase`     | `IUT2` (depth 2)                         |
 
-## User-facing entry point
+## Entry point
 
 The kernel exposes one dispatcher:
 
@@ -46,17 +44,16 @@ The kernel exposes one dispatcher:
 def checkDerivation (d : Derivation) : CheckM Unit
 ```
 
-`CheckM` is `ExceptT String Id` (which reduces to `Except String`),
-so `checkDerivation d` returns either `.ok ()` (the derivation `d`
-is the certificate) or `.error msg` where `msg` identifies the
-failing premise.
+`CheckM` is `ExceptT String Id` (i.e. `Except String`), so
+`checkDerivation d` returns either `.ok ()` — `d` is a valid
+certificate — or `.error msg`, where `msg` identifies the failing
+premise.
 
 ### A successful certificate check
 
-The minimal example below builds an `IUT` derivation: 35 / 100
-applicants from group A are denied, the model says 20 %, and 20 %
-falls outside the score-test acceptance band for the observed
-frequency, so the derivation must conclude `UTrust`.
+35/100 applicants from group A are denied; the model declares 20 %;
+20 % lies outside the score-test acceptance band for the observed
+frequency, so the verdict has to be `UTrust`.
 
 ```lean
 import TPTND
@@ -89,9 +86,8 @@ open TPTND
 
 ### A failed certificate check
 
-The same shape, but with the model now claiming 30 % (which lies
-*inside* the band) — so `IUT` is no longer the correct rule and
-the kernel rejects the derivation:
+Same shape, but the model now claims 30 % — inside the band, so
+`IUT` is no longer the right rule and the kernel rejects:
 
 ```lean
 #eval show Except String Unit from Id.run do
@@ -119,25 +115,23 @@ the kernel rejects the derivation:
 -- Except.error "IUT: model probability must lie OUTSIDE binomial CI"
 ```
 
-The derivation is the same Lean term as before, but the kernel
-refuses it because the rule's side condition fails. To certify
-this audit you would use `IT` (Trust) instead of `IUT`.
+Same Lean term, rejected because the rule's side condition fails.
+To certify this audit you'd write `IT` (Trust) instead of `IUT`.
 
 A `Derivation` tree is built with
-`Derivation.node ruleName premises sequent independenceWitness` where
-`ruleName : RuleName` is one of the closed enumeration of rule
-constructors (e.g. `.iT`, `.iUT2`, `.update`, `.ePosterior`,
-`.contraction`). Rule-name typos are compile-time errors.
+`Derivation.node ruleName premises sequent independenceWitness`,
+where `ruleName : RuleName` ranges over a closed enumeration
+(`.iT`, `.iUT2`, `.update`, `.ePosterior`, `.contraction`, …).
+Rule-name typos are compile-time errors.
 
-In the success case the kernel verifies, in order: that the
-observation leaf's provenance is non-empty, that the identity
-leaf's constraint is exact, that the declared CI matches
-`binomialCI`, that the model probability lies outside the CI
-(otherwise `IT` would be the right rule), that the conclusion's
-term, sample size, output and frequency match the observation
-premise, and that the conclusion context inherits properly from
-the premises.  Each of these checks corresponds to one possible
-`.error` message in the failure case.
+For the success case the kernel verifies, in order: the observation
+leaf's provenance is non-empty; the identity leaf's constraint is
+exact; the declared CI matches `binomialCI`; the model probability
+lies outside the CI (otherwise `IT` would have been the rule); the
+conclusion's term, sample size, output and frequency match the
+observation premise; the conclusion context inherits correctly from
+the premises. Each check corresponds to one of the `.error` messages
+in the failure case.
 
 ### Rule constructors
 
@@ -155,9 +149,9 @@ Comparison:            .iEx .iNEx .eEx .eNEx
 Structural:            .weakeningD .weakeningS .contraction
 ```
 
-The dispatcher in `TPTND.lean` is exhaustive over `RuleName`, so adding
-a new rule requires extending the inductive and writing a new
-`checkXXX` function in `TPTND/Rules/`.
+The dispatcher in `TPTND.lean` is exhaustive over `RuleName`. Adding
+a new rule means extending the inductive and writing a new `checkXXX`
+function in `TPTND/Rules/`.
 
 ## Project layout
 
@@ -193,7 +187,6 @@ TPTND/
 
 ## Reproducibility
 
-A clean `lake build` followed by running the four binaries reproduces
-every numerical claim in the paper. The Lean toolchain version is
-pinned in `lean-toolchain`; the dependency on Mathlib is pinned in
-`lake-manifest.json`.
+`lake build` followed by the four binaries reproduces every numerical
+claim in the paper. The Lean toolchain is pinned in `lean-toolchain`;
+the Mathlib dependency in `lake-manifest.json`.
